@@ -130,6 +130,7 @@ const keys = {};
 const ball = {
   x: W / 2, y: H / 2, vx: 0, vy: 0,
   owner: null, // null | player object ref
+  lastToucher: null, // last player to possess the ball (for restart decisions)
   airTime: 0
 };
 
@@ -180,6 +181,7 @@ const cpuPlayers = [
 ball.x = humanPlayers[9].x + PLAYER_R + BALL_R + 2;
 ball.y = humanPlayers[9].y;
 ball.owner = humanPlayers[9];
+ball.lastToucher = humanPlayers[9];
 humanPlayers[9].hasBall = true;
 
 // ─── HELPERS ──────────────────────────────────────────────
@@ -543,35 +545,32 @@ function moveBall() {
   ball.vx *= 0.975; ball.vy *= 0.975;
   if (ball.airTime > 0) ball.airTime--;
 
-  // Sideline bounce / throw-in
-  if (ball.y < PITCH_T + BALL_R) {
-    ball.vy *= -0.6; ball.y = PITCH_T + BALL_R;
-  }
-  if (ball.y > PITCH_B - BALL_R) {
-    ball.vy *= -0.6; ball.y = PITCH_B - BALL_R;
-  }
+  // Sideline -> throw-in
+  if (ball.y < PITCH_T + BALL_R) { throwIn(ball.x, PITCH_T + BALL_R); return; }
+  if (ball.y > PITCH_B - BALL_R) { throwIn(ball.x, PITCH_B - BALL_R); return; }
 
-  // Goal line: check for goal, else corner/goal-kick
+  // Goal line: check for goal, else corner kick / goal kick
   if (ball.x < PITCH_L + BALL_R) {
-    if (ball.y > GOAL_TOP && ball.y < GOAL_BOT) {
-      cpuTeamScores(); return;
-    }
-    // Corner or goal kick
-    ball.vx *= -0.6; ball.x = PITCH_L + BALL_R;
-    setMsg('Corner / Goal kick!', 80);
+    if (ball.y > GOAL_TOP && ball.y < GOAL_BOT) { cpuTeamScores(); return; }
+    const topSide = ball.y < H / 2;
+    // If human last touched, ball went out off human -> CPU corner at human's goal.
+    // If CPU last touched, ball went out off CPU attacker -> Human goal kick.
+    if (ball.lastToucher && ball.lastToucher.team === 'human') cornerKick('cpu', topSide, 'left');
+    else goalKick('human');
+    return;
   }
   if (ball.x > PITCH_R - BALL_R) {
-    if (ball.y > GOAL_TOP && ball.y < GOAL_BOT) {
-      humanTeamScores(); return;
-    }
-    ball.vx *= -0.6; ball.x = PITCH_R - BALL_R;
-    setMsg('Corner / Goal kick!', 80);
+    if (ball.y > GOAL_TOP && ball.y < GOAL_BOT) { humanTeamScores(); return; }
+    const topSide = ball.y < H / 2;
+    if (ball.lastToucher && ball.lastToucher.team === 'cpu') cornerKick('human', topSide, 'right');
+    else goalKick('cpu');
+    return;
   }
 
   // Ball collection by human players
   for (const p of humanPlayers) {
     if (dist(ball, p) < PLAYER_R + BALL_R + 5 && ball.airTime < 5) {
-      ball.owner = p; p.hasBall = true;
+      ball.owner = p; p.hasBall = true; ball.lastToucher = p;
       // Release all other players' hasBall
       for (const other of allPlayers()) if (other !== p) other.hasBall = false;
       if (p !== humanPlayers[activeIdx]) {
@@ -589,12 +588,73 @@ function moveBall() {
   // Ball collection by CPU players
   for (const p of cpuPlayers) {
     if (dist(ball, p) < PLAYER_R + BALL_R + 5 && ball.airTime < 5) {
-      ball.owner = p; p.hasBall = true;
+      ball.owner = p; p.hasBall = true; ball.lastToucher = p;
       for (const other of allPlayers()) if (other !== p) other.hasBall = false;
       setMsg('CPU wins the ball!', 80);
       return;
     }
   }
+}
+
+// ─── DEAD-BALL RESTARTS (throw-in, corner, goal kick) ────
+function clearPossession() {
+  for (const p of allPlayers()) p.hasBall = false;
+  ball.owner = null; ball.vx = 0; ball.vy = 0; ball.airTime = 0;
+}
+
+function giveBallTo(p, facingRight) {
+  clearPossession();
+  const offset = facingRight ? 1 : -1;
+  ball.x = p.x + offset * (PLAYER_R + BALL_R + 2);
+  ball.y = p.y;
+  ball.owner = p; p.hasBall = true; ball.lastToucher = p;
+  if (p.team === 'human') {
+    activeIdx = humanPlayers.indexOf(p);
+    lastSwitchAnim = 25;
+  }
+}
+
+function throwIn(outX, outY) {
+  // Opposing team of last toucher takes the throw-in.
+  const team = ball.lastToucher && ball.lastToucher.team === 'human' ? 'cpu' : 'human';
+  const players = team === 'human' ? humanPlayers : cpuPlayers;
+  let nearest = null, bd = Infinity;
+  for (const p of players) {
+    if (p.role === 'gk') continue;
+    const d = Math.hypot(p.x - outX, p.y - outY);
+    if (d < bd) { bd = d; nearest = p; }
+  }
+  if (!nearest) nearest = players[1];
+  nearest.x = clamp(outX, PITCH_L + PLAYER_R, PITCH_R - PLAYER_R);
+  nearest.y = clamp(outY, PITCH_T + PLAYER_R, PITCH_B - PLAYER_R);
+  giveBallTo(nearest, team === 'human'); // human faces right, cpu faces left
+  setMsg(`${team === 'human' ? 'Your' : 'CPU'} throw-in!`, 100);
+}
+
+function cornerKick(forTeam, topSide, side) {
+  // side: which goal line the ball crossed ('left' or 'right')
+  const cornerX = side === 'left' ? PITCH_L + 4 : PITCH_R - 4;
+  const cornerY = topSide ? PITCH_T + 4 : PITCH_B - 4;
+  const players = forTeam === 'human' ? humanPlayers : cpuPlayers;
+  let kicker = null, bd = Infinity;
+  for (const p of players) {
+    if (p.role === 'gk') continue;
+    const d = Math.hypot(p.x - cornerX, p.y - cornerY);
+    if (d < bd) { bd = d; kicker = p; }
+  }
+  if (!kicker) kicker = players[players.length - 1];
+  kicker.x = cornerX; kicker.y = cornerY;
+  giveBallTo(kicker, forTeam === 'human');
+  setMsg(`${forTeam === 'human' ? 'Your' : 'CPU'} corner kick!`, 120);
+}
+
+function goalKick(forTeam) {
+  const players = forTeam === 'human' ? humanPlayers : cpuPlayers;
+  const gk = players.find(p => p.role === 'gk');
+  gk.x = forTeam === 'human' ? PITCH_L + 70 : PITCH_R - 70;
+  gk.y = H / 2;
+  giveBallTo(gk, forTeam === 'human');
+  setMsg(`${forTeam === 'human' ? 'Your' : 'CPU'} goal kick!`, 120);
 }
 
 // ─── ACTIONS ─────────────────────────────────────────────
@@ -731,6 +791,7 @@ function resetPositions(humanKickoff) {
     ball.y = cpuPlayers[9].y;
     setMsg('CPU Kickoff — get back and defend!', 150);
   }
+  ball.lastToucher = ball.owner;
 }
 
 // ─── INPUT HANDLING ───────────────────────────────────────
