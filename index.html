@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FIFA-Style Soccer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #1a1a2e; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 10px; font-family: 'Segoe UI', sans-serif; }
+#game-container { width: 100%; max-width: 760px; user-select: none; }
+#scoreboard {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 18px; background: #0f0f23; border: 1px solid #333;
+  border-radius: 10px; margin-bottom: 8px; color: #fff;
+}
+.team-info { display: flex; flex-direction: column; }
+.team-name { font-size: 13px; font-weight: 600; color: #aaa; }
+.team-formation { font-size: 11px; color: #666; }
+.score-box { font-size: 30px; font-weight: 700; color: #fff; letter-spacing: 6px; }
+.timer { font-size: 13px; color: #aaa; }
+canvas { display: block; width: 100%; border-radius: 8px; border: 1px solid #444; cursor: default; }
+#controls {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px;
+  margin-top: 8px;
+}
+.ctrl-btn {
+  padding: 11px 4px; font-size: 12px; font-weight: 600;
+  background: #1e1e3a; color: #eee;
+  border: 1px solid #444; border-radius: 8px;
+  cursor: pointer; text-align: center; transition: all 0.1s;
+}
+.ctrl-btn:active, .ctrl-btn.pressed { background: #2e2e5a; transform: scale(0.96); }
+.ctrl-btn.switch-btn { background: #1a3a1a; border-color: #4a7; color: #4fa; }
+.ctrl-btn.switch-btn:active { background: #2a5a2a; }
+#status-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 6px; font-size: 12px; color: #888; min-height: 22px;
+  padding: 0 4px;
+}
+#active-player-info { color: #4fa; font-weight: 600; }
+#message { color: #bbb; }
+#canvas-wrap { position: relative; }
+#goal-flash {
+  display: none; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  align-items: center; justify-content: center; flex-direction: column;
+  font-size: 48px; font-weight: 700; color: #fff; pointer-events: none;
+  border-radius: 8px; text-shadow: 2px 2px 8px #000;
+}
+#goal-flash .sub { font-size: 18px; margin-top: 6px; }
+#kick-indicator {
+  display: none; position: absolute; top: 8px; right: 10px;
+  font-size: 12px; color: #4fa; background: rgba(0,80,0,0.7);
+  padding: 3px 10px; border-radius: 6px; font-weight: 600;
+}
+#switch-indicator {
+  position: absolute; top: 8px; left: 10px;
+  font-size: 11px; color: #fff; background: rgba(0,0,0,0.6);
+  padding: 3px 10px; border-radius: 6px; pointer-events: none;
+}
+</style>
+</head>
+<body>
+<div id="game-container">
+  <div id="scoreboard">
+    <div class="team-info">
+      <div class="team-name">⚽ YOUR TEAM</div>
+      <div class="team-formation">4-3-3</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;">
+      <span class="score-box" id="score-display">0 — 0</span>
+    </div>
+    <div class="team-info" style="align-items:flex-end;">
+      <div class="team-name">CPU TEAM</div>
+      <div class="timer" id="timer-display">90:00</div>
+    </div>
+  </div>
+  <div id="canvas-wrap">
+    <canvas id="pitch" height="450"></canvas>
+    <div id="goal-flash"><span id="goal-text"></span><span class="sub" id="goal-sub"></span></div>
+    <div id="kick-indicator">⚡ SHOOT!</div>
+    <div id="switch-indicator" id="switch-indicator"></div>
+  </div>
+  <div id="controls">
+    <button class="ctrl-btn" data-action="up-left">↖</button>
+    <button class="ctrl-btn" data-action="up">▲</button>
+    <button class="ctrl-btn" data-action="up-right">↗</button>
+    <button class="ctrl-btn" data-action="shoot">⚽ Shoot</button>
+    <button class="ctrl-btn" data-action="sprint">⚡ Sprint</button>
+    <button class="ctrl-btn" data-action="left">◄</button>
+    <button class="ctrl-btn" data-action="stop">■ Stop</button>
+    <button class="ctrl-btn" data-action="right">►</button>
+    <button class="ctrl-btn" data-action="pass">↔ Pass</button>
+    <button class="ctrl-btn" data-action="tackle">💪 Tackle</button>
+    <button class="ctrl-btn" data-action="down-left">↙</button>
+    <button class="ctrl-btn" data-action="down">▼</button>
+    <button class="ctrl-btn" data-action="down-right">↘</button>
+    <button class="ctrl-btn switch-btn" data-action="switch">🔄 Switch</button>
+    <button class="ctrl-btn" data-action="restart">↺ Restart</button>
+  </div>
+  <div id="status-bar">
+    <div id="active-player-info">Player #10</div>
+    <div id="message">Use arrows to move • Switch player with 🔄 or Tab</div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('pitch');
+const ctx = canvas.getContext('2d');
+const W = 760, H = 450;
+canvas.width = W; canvas.height = H;
+
+// ─── CONSTANTS ───────────────────────────────────────────
+const PLAYER_R = 11, BALL_R = 7, GK_R = 12;
+const GOAL_W = 90, GOAL_DEPTH = 18;
+const PITCH_L = 18, PITCH_R = W - 18, PITCH_T = 18, PITCH_B = H - 18;
+const GOAL_TOP = (H - GOAL_W) / 2, GOAL_BOT = (H + GOAL_W) / 2;
+
+// ─── STATE ────────────────────────────────────────────────
+let score = [0, 0];
+let gameTime = 90 * 60;
+let timerInterval = null;
+let gameOver = false;
+let message = '', messageTimer = 0;
+let shootCharging = false, shootPower = 0, lobShot = false;
+let activeIdx = 0; // which human player is controlled
+let lastSwitchAnim = 0;
+const keys = {};
+
+// ─── BALL ─────────────────────────────────────────────────
+const ball = {
+  x: W / 2, y: H / 2, vx: 0, vy: 0,
+  owner: null, // null | player object ref
+  airTime: 0
+};
+
+// ─── HUMAN PLAYERS (4-3-3) ───────────────────────────────
+// Positions: GK(0), DEF x4(1-4), MID x3(5-7), FWD x3(8-10)
+function makeHumanPlayer(x, y, shirt, role, homeX, homeY) {
+  return { x, y, vx: 0, vy: 0, shirt, role, homeX, homeY,
+           hasBall: false, color: '#1A6DC7', team: 'human', stamina: 100 };
+}
+
+const humanPlayers = [
+  makeHumanPlayer(50, H/2,       '1',  'gk',  50,     H/2),
+  makeHumanPlayer(160, H*0.2,    '2',  'def', 160,    H*0.2),
+  makeHumanPlayer(160, H*0.4,    '5',  'def', 160,    H*0.4),
+  makeHumanPlayer(160, H*0.6,    '6',  'def', 160,    H*0.6),
+  makeHumanPlayer(160, H*0.8,    '3',  'def', 160,    H*0.8),
+  makeHumanPlayer(290, H*0.25,   '8',  'mid', 290,    H*0.25),
+  makeHumanPlayer(290, H*0.5,    '4',  'mid', 290,    H*0.5),
+  makeHumanPlayer(290, H*0.75,   '11', 'mid', 290,    H*0.75),
+  makeHumanPlayer(420, H*0.2,    '7',  'fwd', 420,    H*0.2),
+  makeHumanPlayer(420, H*0.5,    '10', 'fwd', 420,    H*0.5), // starts as active
+  makeHumanPlayer(420, H*0.8,    '9',  'fwd', 420,    H*0.8),
+];
+activeIdx = 9; // #10 striker
+
+// ─── CPU PLAYERS (4-3-3) ─────────────────────────────────
+function makeCpuPlayer(x, y, shirt, role, homeX, homeY) {
+  return { x, y, vx: 0, vy: 0, shirt, role, homeX, homeY,
+           hasBall: false, color: '#C0392B', team: 'cpu',
+           state: 'defend', stateTimer: 0 };
+}
+
+const cpuPlayers = [
+  makeCpuPlayer(W-50,   H/2,    'GK', 'gk',    W-50,   H/2),
+  makeCpuPlayer(W-160,  H*0.2,  '2',  'def',   W-160,  H*0.2),
+  makeCpuPlayer(W-160,  H*0.4,  '5',  'def',   W-160,  H*0.4),
+  makeCpuPlayer(W-160,  H*0.6,  '6',  'def',   W-160,  H*0.6),
+  makeCpuPlayer(W-160,  H*0.8,  '3',  'def',   W-160,  H*0.8),
+  makeCpuPlayer(W-290,  H*0.25, '8',  'mid',   W-290,  H*0.25),
+  makeCpuPlayer(W-290,  H*0.5,  '4',  'mid',   W-290,  H*0.5),
+  makeCpuPlayer(W-290,  H*0.75, '11', 'mid',   W-290,  H*0.75),
+  makeCpuPlayer(W-420,  H*0.2,  '7',  'fwd',   W-420,  H*0.2),
+  makeCpuPlayer(W-420,  H*0.5,  '9',  'fwd',   W-420,  H*0.5),
+  makeCpuPlayer(W-420,  H*0.8,  '11b','fwd',   W-420,  H*0.8),
+];
+
+// Ball possession: place on striker at kickoff
+ball.x = humanPlayers[9].x + PLAYER_R + BALL_R + 2;
+ball.y = humanPlayers[9].y;
+ball.owner = humanPlayers[9];
+humanPlayers[9].hasBall = true;
+
+// ─── HELPERS ──────────────────────────────────────────────
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function setMsg(m, dur = 120) { message = m; messageTimer = dur; }
+
+function allPlayers() { return [...humanPlayers, ...cpuPlayers]; }
+
+// ─── AUTO-SWITCH: select nearest human player to ball ─────
+function autoSwitchToBallCarrier() {
+  // if already have ball, stay
+  if (humanPlayers[activeIdx].hasBall) return;
+  // switch to human player with ball, or nearest to ball
+  let bestIdx = activeIdx, bestDist = Infinity;
+  for (let i = 0; i < humanPlayers.length; i++) {
+    if (humanPlayers[i].hasBall) { activeIdx = i; return; }
+    const d = dist(humanPlayers[i], ball);
+    if (d < bestDist) { bestDist = d; bestIdx = i; }
+  }
+}
+
+function switchToNearest() {
+  const cur = humanPlayers[activeIdx];
+  let bestIdx = -1, bestDist = Infinity;
+  for (let i = 0; i < humanPlayers.length; i++) {
+    if (i === activeIdx) continue;
+    const d = dist(humanPlayers[i], ball);
+    if (d < bestDist) { bestDist = d; bestIdx = i; }
+  }
+  if (bestIdx >= 0) {
+    activeIdx = bestIdx;
+    lastSwitchAnim = 30;
+    setMsg(`Switched to #${humanPlayers[activeIdx].shirt}`, 80);
+  }
+}
+
+// ─── DRAWING ─────────────────────────────────────────────
+function drawPitch() {
+  // Grass stripes
+  for (let i = 0; i < 10; i++) {
+    ctx.fillStyle = i % 2 === 0 ? '#2d7a2d' : '#297327';
+    ctx.fillRect(i * (W / 10), 0, W / 10, H);
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.65)'; ctx.lineWidth = 1.5;
+  // Boundary
+  ctx.strokeRect(PITCH_L, PITCH_T, W - 36, H - 36);
+  // Halfway line
+  ctx.beginPath(); ctx.moveTo(W/2, PITCH_T); ctx.lineTo(W/2, PITCH_B); ctx.stroke();
+  // Centre circle
+  ctx.beginPath(); ctx.arc(W/2, H/2, 60, 0, Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(W/2, H/2, 3, 0, Math.PI*2);
+  ctx.fillStyle='rgba(255,255,255,0.8)'; ctx.fill();
+  // Penalty areas
+  const pa_w = 110, pa_h = 220;
+  ctx.strokeRect(PITCH_L, (H-pa_h)/2, pa_w, pa_h);
+  ctx.strokeRect(PITCH_R - pa_w, (H-pa_h)/2, pa_w, pa_h);
+  // Goal areas
+  const ga_w = 55, ga_h = 140;
+  ctx.strokeRect(PITCH_L, (H-ga_h)/2, ga_w, ga_h);
+  ctx.strokeRect(PITCH_R - ga_w, (H-ga_h)/2, ga_w, ga_h);
+  // Penalty spots
+  ctx.beginPath(); ctx.arc(PITCH_L + 88, H/2, 3, 0, Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.7)'; ctx.fill();
+  ctx.beginPath(); ctx.arc(PITCH_R - 88, H/2, 3, 0, Math.PI*2); ctx.fill();
+  // Penalty arcs
+  ctx.beginPath(); ctx.arc(PITCH_L + 88, H/2, 60, -Math.PI*0.4, Math.PI*0.4);
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.stroke();
+  ctx.beginPath(); ctx.arc(PITCH_R - 88, H/2, 60, Math.PI*0.6, Math.PI*1.4);
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.stroke();
+  // Corner arcs
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  [[PITCH_L,PITCH_T],[PITCH_R,PITCH_T],[PITCH_L,PITCH_B],[PITCH_R,PITCH_B]].forEach(([cx,cy])=>{
+    const sa = Math.atan2(H/2-cy,W/2-cx) - 0.3;
+    ctx.beginPath(); ctx.arc(cx, cy, 10, sa, sa+0.6); ctx.stroke();
+  });
+  // Goals
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(0, GOAL_TOP, GOAL_DEPTH, GOAL_W);
+  ctx.fillRect(W - GOAL_DEPTH, GOAL_TOP, GOAL_DEPTH, GOAL_W);
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2;
+  ctx.strokeRect(0, GOAL_TOP, GOAL_DEPTH, GOAL_W);
+  ctx.strokeRect(W - GOAL_DEPTH, GOAL_TOP, GOAL_DEPTH, GOAL_W);
+  // Goal net lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 0.5;
+  for (let i = 1; i < 4; i++) {
+    ctx.beginPath(); ctx.moveTo(0, GOAL_TOP + i*(GOAL_W/4)); ctx.lineTo(GOAL_DEPTH, GOAL_TOP + i*(GOAL_W/4)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(W, GOAL_TOP + i*(GOAL_W/4)); ctx.lineTo(W-GOAL_DEPTH, GOAL_TOP + i*(GOAL_W/4)); ctx.stroke();
+  }
+}
+
+function drawPlayerSprite(p, isActive) {
+  const { x, y, color, shirt, hasBall, team } = p;
+  // Shadow
+  ctx.beginPath(); ctx.ellipse(x, y + PLAYER_R + 1, PLAYER_R*0.85, 3.5, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fill();
+
+  // Active glow ring
+  if (isActive) {
+    ctx.beginPath(); ctx.arc(x, y, PLAYER_R + 5, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(100,255,150,0.7)'; ctx.lineWidth = 2.5; ctx.stroke();
+  }
+
+  // Body
+  ctx.beginPath(); ctx.arc(x, y, PLAYER_R, 0, Math.PI*2);
+  ctx.fillStyle = color; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+  // Shirt number
+  ctx.fillStyle = '#fff'; ctx.font = `bold ${shirt.length > 2 ? '7' : '9'}px sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(shirt, x, y);
+
+  // Ball dribble indicator
+  if (hasBall) {
+    ctx.beginPath(); ctx.arc(x + PLAYER_R + 3, y, 4, 0, Math.PI*2);
+    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 0.8; ctx.stroke();
+  }
+}
+
+function drawBall() {
+  const { x, y, airTime } = ball;
+  const scale = 1 + Math.min(airTime * 0.014, 0.45);
+  if (airTime < 2) {
+    ctx.beginPath(); ctx.ellipse(x, y + BALL_R*0.8, BALL_R*0.85, 3, 0, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.fill();
+  }
+  ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+  ctx.beginPath(); ctx.arc(0, 0, BALL_R, 0, Math.PI*2);
+  ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 0.8; ctx.stroke();
+  ctx.strokeStyle = '#666'; ctx.lineWidth = 0.6;
+  ctx.beginPath(); ctx.moveTo(-3,-4); ctx.lineTo(0,-7); ctx.lineTo(3,-4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-3, 4); ctx.lineTo(0, 7); ctx.lineTo(3, 4); ctx.stroke();
+  ctx.restore();
+}
+
+function drawSwitchArrow() {
+  if (lastSwitchAnim <= 0) return;
+  const p = humanPlayers[activeIdx];
+  const alpha = lastSwitchAnim / 30;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = '#4fa';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('▼', p.x, p.y - PLAYER_R - 10 - (30 - lastSwitchAnim) * 0.3);
+  ctx.restore();
+}
+
+function drawShootBar() {
+  if (!shootCharging) return;
+  const pw = Math.min(shootPower / 100, 1);
+  const p = humanPlayers[activeIdx];
+  ctx.fillStyle = pw > 0.7 ? '#E24B4A' : pw > 0.4 ? '#EF9F27' : '#4fa';
+  ctx.fillRect(p.x - 18, p.y - 24, 36 * pw, 6);
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1;
+  ctx.strokeRect(p.x - 18, p.y - 24, 36, 6);
+}
+
+// ─── PLAYER MOVEMENT ──────────────────────────────────────
+function moveHumanActivePlayer() {
+  const p = humanPlayers[activeIdx];
+  const spd = keys['sprint'] ? 5.0 : 3.3;
+  let dx = 0, dy = 0;
+  if (keys['up']    || keys['up-left']   || keys['up-right'])   dy = -1;
+  if (keys['down']  || keys['down-left'] || keys['down-right']) dy = 1;
+  if (keys['left']  || keys['up-left']   || keys['down-left'])  dx = -1;
+  if (keys['right'] || keys['up-right']  || keys['down-right']) dx = 1;
+  if (dx !== 0 && dy !== 0) { dx *= 0.707; dy *= 0.707; }
+  p.vx = dx * spd; p.vy = dy * spd;
+  p.x = clamp(p.x + p.vx, PITCH_L + PLAYER_R, PITCH_R - PLAYER_R);
+  p.y = clamp(p.y + p.vy, PITCH_T + PLAYER_R, PITCH_B - PLAYER_R);
+  if (p.hasBall && ball.owner === p) {
+    const angle = (p.vx !== 0 || p.vy !== 0) ? Math.atan2(p.vy, p.vx) : 0;
+    ball.x = p.x + Math.cos(angle) * (PLAYER_R + BALL_R + 2);
+    ball.y = p.y + Math.sin(angle) * (PLAYER_R + BALL_R + 2);
+    if (p.vx === 0 && p.vy === 0) { ball.x = p.x + PLAYER_R + BALL_R + 1; ball.y = p.y; }
+  }
+}
+
+// Human teammates move automatically toward their home positions
+// and support the ball carrier
+function moveHumanTeammates() {
+  const activePl = humanPlayers[activeIdx];
+  const ballOwnerIsHuman = ball.owner && ball.owner.team === 'human';
+  for (let i = 0; i < humanPlayers.length; i++) {
+    if (i === activeIdx) continue;
+    const p = humanPlayers[i];
+    if (p.role === 'gk') {
+      // GK stays near goal, tracks ball Y
+      const gkTargetY = ballOwnerIsHuman
+        ? H/2
+        : clamp(ball.y, GOAL_TOP + GK_R, GOAL_BOT - GK_R);
+      const gkTargetX = 50;
+      moveToward(p, gkTargetX, gkTargetY, 2.8);
+      continue;
+    }
+    // Position based on ball and home position
+    let tx = p.homeX, ty = p.homeY;
+    if (ballOwnerIsHuman) {
+      // Push forward slightly when team has ball
+      tx = clamp(p.homeX + 60, PITCH_L + PLAYER_R, PITCH_R/2 + 50);
+      ty = p.homeY + (ball.y - H/2) * 0.15;
+    } else {
+      // Drop back when defending
+      tx = clamp(p.homeX - 40, PITCH_L + PLAYER_R, PITCH_R/2);
+      ty = p.homeY;
+    }
+    // Spread out - avoid bunching
+    for (let j = 0; j < humanPlayers.length; j++) {
+      if (j === i || j === activeIdx) continue;
+      const other = humanPlayers[j];
+      const d = dist(p, other);
+      if (d < 40) {
+        tx += (p.x - other.x) * 0.4;
+        ty += (p.y - other.y) * 0.4;
+      }
+    }
+    moveToward(p, tx, ty, 1.8);
+  }
+}
+
+function moveToward(p, tx, ty, spd) {
+  const dx = tx - p.x, dy = ty - p.y;
+  const d = Math.hypot(dx, dy);
+  if (d > 2) {
+    p.x = clamp(p.x + (dx/d)*spd, PITCH_L+PLAYER_R, PITCH_R-PLAYER_R);
+    p.y = clamp(p.y + (dy/d)*spd, PITCH_T+PLAYER_R, PITCH_B-PLAYER_R);
+  }
+}
+
+// ─── CPU AI ───────────────────────────────────────────────
+let cpuPassCooldown = 0;
+
+function aiMoveCpu() {
+  if (gameOver) return;
+  const cpuHasBall = ball.owner && ball.owner.team === 'cpu';
+
+  for (const p of cpuPlayers) {
+    if (p.role === 'gk') {
+      // GK logic
+      if (cpuHasBall) {
+        moveToward(p, W-50, H/2, 2);
+      } else {
+        const gkTargetY = clamp(ball.y, GOAL_TOP + GK_R, GOAL_BOT - GK_R);
+        moveToward(p, W-50, gkTargetY, 3.5);
+      }
+      continue;
+    }
+
+    if (p.hasBall) {
+      // Ball carrier: dribble toward goal or pass
+      const distToGoal = Math.abs(p.x - PITCH_L);
+      // Try shooting if in range and roughly on target
+      if (p.x < 250 && Math.abs(p.y - H/2) < 130 && Math.random() < 0.025) {
+        cpuShoot(p);
+        continue;
+      }
+      // Pass to open teammate if closely marked
+      if (cpuPassCooldown <= 0) {
+        const marker = nearestHumanTo(p);
+        if (marker && dist(p, marker) < 55 && Math.random() < 0.04) {
+          cpuPass(p);
+          continue;
+        }
+      }
+      // Dribble toward goal
+      const targetX = PITCH_L + 50;
+      const targetY = H/2 + (Math.random()-0.5)*30;
+      moveToward(p, targetX, targetY, 2.8);
+      ball.x = p.x - (PLAYER_R + BALL_R + 2);
+      ball.y = p.y;
+      continue;
+    }
+
+    // Without ball: positioning
+    if (cpuHasBall) {
+      // Attack: support run
+      let tx = p.homeX - 80, ty = p.homeY;
+      if (p.role === 'fwd') {
+        tx = clamp(p.homeX - 120 + Math.sin(Date.now()/900 + p.homeY)*30, 80, W-80);
+        ty = p.homeY + Math.sin(Date.now()/700 + p.homeX)*25;
+      } else if (p.role === 'mid') {
+        tx = p.homeX - 50;
+      }
+      // Avoid bunching
+      for (const other of cpuPlayers) {
+        if (other === p) continue;
+        const d = dist(p, other);
+        if (d < 45) { tx += (p.x - other.x)*0.3; ty += (p.y - other.y)*0.3; }
+      }
+      moveToward(p, tx, clamp(ty, PITCH_T+PLAYER_R, PITCH_B-PLAYER_R), 2.0);
+    } else {
+      // Defend: press ball or hold position
+      const d = dist(p, ball);
+      const homeD = dist(p, {x: p.homeX, y: p.homeY});
+      if (d < 120 && p.role !== 'def') {
+        // Press the ball
+        moveToward(p, ball.x, ball.y, 2.4);
+      } else if (p.role === 'def' || p.role === 'mid') {
+        // Hold shape
+        moveToward(p, p.homeX, p.homeY, 1.6);
+      } else {
+        moveToward(p, ball.x, ball.y, 2.2);
+      }
+    }
+  }
+  if (cpuPassCooldown > 0) cpuPassCooldown--;
+}
+
+function nearestHumanTo(p) {
+  let best = null, bd = Infinity;
+  for (const h of humanPlayers) {
+    const d = dist(p, h);
+    if (d < bd) { bd = d; best = h; }
+  }
+  return best;
+}
+
+function cpuShoot(p) {
+  const goalX = PITCH_L;
+  const targetY = clamp(H/2 + (Math.random()-0.5)*GOAL_W*0.7, GOAL_TOP+8, GOAL_BOT-8);
+  const dx = goalX - p.x, dy = targetY - p.y;
+  const mag = Math.hypot(dx, dy);
+  const power = 8 + Math.random()*5;
+  ball.vx = (dx/mag)*power;
+  ball.vy = (dy/mag)*power;
+  ball.owner = null; p.hasBall = false;
+  setMsg('CPU shoots! 💥', 70);
+}
+
+function cpuPass(carrier) {
+  // Find best open CPU teammate
+  let best = null, bestScore = -Infinity;
+  for (const p of cpuPlayers) {
+    if (p === carrier || p.role === 'gk') continue;
+    const advScore = (carrier.x - p.x) * 2; // prefer forward pass
+    const openScore = (() => {
+      let s = 0;
+      for (const h of humanPlayers) s -= Math.max(0, 80 - dist(p, h));
+      return s;
+    })();
+    const total = advScore + openScore;
+    if (total > bestScore) { bestScore = total; best = p; }
+  }
+  if (!best) return;
+  const dx = best.x - carrier.x, dy = best.y - carrier.y;
+  const mag = Math.hypot(dx, dy);
+  ball.vx = (dx/mag)*6.5;
+  ball.vy = (dy/mag)*6.5 + (Math.random()-0.5)*1;
+  ball.owner = null; carrier.hasBall = false;
+  cpuPassCooldown = 40;
+  setMsg('CPU passes!', 60);
+}
+
+// ─── BALL PHYSICS ─────────────────────────────────────────
+function moveBall() {
+  if (ball.owner !== null) return;
+  ball.x += ball.vx; ball.y += ball.vy;
+  ball.vx *= 0.975; ball.vy *= 0.975;
+  if (ball.airTime > 0) ball.airTime--;
+
+  // Sideline bounce / throw-in
+  if (ball.y < PITCH_T + BALL_R) {
+    ball.vy *= -0.6; ball.y = PITCH_T + BALL_R;
+  }
+  if (ball.y > PITCH_B - BALL_R) {
+    ball.vy *= -0.6; ball.y = PITCH_B - BALL_R;
+  }
+
+  // Goal line: check for goal, else corner/goal-kick
+  if (ball.x < PITCH_L + BALL_R) {
+    if (ball.y > GOAL_TOP && ball.y < GOAL_BOT) {
+      cpuTeamScores(); return;
+    }
+    // Corner or goal kick
+    ball.vx *= -0.6; ball.x = PITCH_L + BALL_R;
+    setMsg('Corner / Goal kick!', 80);
+  }
+  if (ball.x > PITCH_R - BALL_R) {
+    if (ball.y > GOAL_TOP && ball.y < GOAL_BOT) {
+      humanTeamScores(); return;
+    }
+    ball.vx *= -0.6; ball.x = PITCH_R - BALL_R;
+    setMsg('Corner / Goal kick!', 80);
+  }
+
+  // Ball collection by human players
+  for (const p of humanPlayers) {
+    if (dist(ball, p) < PLAYER_R + BALL_R + 5 && ball.airTime < 5) {
+      ball.owner = p; p.hasBall = true;
+      // Release all other players' hasBall
+      for (const other of allPlayers()) if (other !== p) other.hasBall = false;
+      if (p !== humanPlayers[activeIdx]) {
+        // Auto-switch if a teammate collects the ball
+        activeIdx = humanPlayers.indexOf(p);
+        lastSwitchAnim = 25;
+        setMsg(`#${p.shirt} got the ball — switched!`, 100);
+      } else {
+        setMsg(`#${p.shirt} got the ball!`, 60);
+      }
+      return;
+    }
+  }
+
+  // Ball collection by CPU players
+  for (const p of cpuPlayers) {
+    if (dist(ball, p) < PLAYER_R + BALL_R + 5 && ball.airTime < 5) {
+      ball.owner = p; p.hasBall = true;
+      for (const other of allPlayers()) if (other !== p) other.hasBall = false;
+      setMsg('CPU wins the ball!', 80);
+      return;
+    }
+  }
+}
+
+// ─── ACTIONS ─────────────────────────────────────────────
+function shoot(lob) {
+  const p = humanPlayers[activeIdx];
+  if (!p.hasBall || ball.owner !== p) { setMsg('Get the ball first!', 80); return; }
+  const power = Math.min(shootPower / 80, 1);
+  const baseSpd = 9 + power * 6;
+  const goalX = PITCH_R;
+  const targetY = clamp(H/2 + (Math.random()-0.5)*GOAL_W*0.55, GOAL_TOP+6, GOAL_BOT-6);
+  const dx = goalX - p.x, dy = targetY - p.y;
+  const mag = Math.hypot(dx, dy);
+  ball.vx = (dx/mag)*baseSpd;
+  ball.vy = (dy/mag)*baseSpd;
+  if (lob) { ball.vy -= 3; ball.airTime = 70; }
+  ball.owner = null; p.hasBall = false;
+  setMsg(lob ? `Lob shot! 🌀` : `Power shot ${Math.round(power*100)}%! 💥`, 80);
+}
+
+function doPass() {
+  const p = humanPlayers[activeIdx];
+  if (!p.hasBall || ball.owner !== p) { setMsg('No ball to pass!', 60); return; }
+  // Pass to nearest open human teammate
+  let best = null, bestScore = -Infinity;
+  for (let i = 0; i < humanPlayers.length; i++) {
+    if (i === activeIdx) continue;
+    const t = humanPlayers[i];
+    const fwd = t.x - p.x; // prefer forward
+    const open = (() => {
+      let s = 0;
+      for (const c of cpuPlayers) s -= Math.max(0, 70-dist(t,c));
+      return s;
+    })();
+    const sc = fwd*1.5 + open;
+    if (sc > bestScore) { bestScore = sc; best = { p: t, i }; }
+  }
+  if (best) {
+    const dx = best.p.x - p.x, dy = best.p.y - p.y;
+    const mag = Math.hypot(dx, dy) || 1;
+    ball.vx = (dx/mag)*7;
+    ball.vy = (dy/mag)*7 + (Math.random()-0.5)*1.5;
+    ball.owner = null; p.hasBall = false;
+    setMsg(`Pass to #${best.p.shirt}!`, 70);
+  } else {
+    ball.vx = 4 + Math.random()*2;
+    ball.vy = (Math.random()-0.5)*3;
+    ball.owner = null; p.hasBall = false;
+    setMsg('Pass!', 60);
+  }
+}
+
+function doTackle() {
+  const p = humanPlayers[activeIdx];
+  let tackled = false;
+  for (const cpu of cpuPlayers) {
+    if (dist(p, cpu) < PLAYER_R*2 + 12 && cpu.hasBall) {
+      // Tackle success rate ~65%
+      if (Math.random() < 0.65) {
+        cpu.hasBall = false; ball.owner = null;
+        ball.vx = -3 + Math.random()*2;
+        ball.vy = (Math.random()-0.5)*5;
+        setMsg('Great tackle! 💪', 90);
+      } else {
+        setMsg('Tackle missed — foul risk!', 80);
+      }
+      tackled = true; break;
+    }
+  }
+  if (!tackled) setMsg(dist(p, ball) < 80 ? 'No one to tackle nearby!' : 'Too far away!', 60);
+}
+
+// ─── SCORING ─────────────────────────────────────────────
+let scoringCooldown = 0;
+
+function humanTeamScores() {
+  if (scoringCooldown > 0) return;
+  score[0]++;
+  showGoalFlash('⚽ GOAL!', '#1A6DC7', `YOU lead ${score[0]}–${score[1]}`);
+  updateScore();
+  scoringCooldown = 120;
+  setTimeout(() => { resetPositions(true); scoringCooldown = 0; }, 2200);
+}
+
+function cpuTeamScores() {
+  if (scoringCooldown > 0) return;
+  score[1]++;
+  showGoalFlash('CPU GOAL! 😤', '#C0392B', `CPU leads ${score[1]}–${score[0]}`);
+  updateScore();
+  scoringCooldown = 120;
+  setTimeout(() => { resetPositions(false); scoringCooldown = 0; }, 2200);
+}
+
+function showGoalFlash(text, color, sub) {
+  const el = document.getElementById('goal-flash');
+  document.getElementById('goal-text').textContent = text;
+  document.getElementById('goal-sub').textContent = sub || '';
+  el.style.display = 'flex'; el.style.background = color + 'cc';
+  setTimeout(() => { el.style.display = 'none'; }, 2000);
+}
+
+function updateScore() {
+  document.getElementById('score-display').textContent = score[0] + ' — ' + score[1];
+}
+
+function resetPositions(humanKickoff) {
+  // Reset human players
+  const hPositions = [
+    [50,H/2],[160,H*0.2],[160,H*0.4],[160,H*0.6],[160,H*0.8],
+    [290,H*0.25],[290,H*0.5],[290,H*0.75],[420,H*0.2],[420,H*0.5],[420,H*0.8]
+  ];
+  humanPlayers.forEach((p,i) => {
+    p.x=hPositions[i][0]; p.y=hPositions[i][1]; p.vx=0; p.vy=0; p.hasBall=false;
+  });
+  // Reset CPU players
+  const cPositions = [
+    [W-50,H/2],[W-160,H*0.2],[W-160,H*0.4],[W-160,H*0.6],[W-160,H*0.8],
+    [W-290,H*0.25],[W-290,H*0.5],[W-290,H*0.75],[W-420,H*0.2],[W-420,H*0.5],[W-420,H*0.8]
+  ];
+  cpuPlayers.forEach((p,i) => {
+    p.x=cPositions[i][0]; p.y=cPositions[i][1]; p.vx=0; p.vy=0; p.hasBall=false;
+  });
+  ball.vx=0; ball.vy=0; ball.airTime=0;
+  if (humanKickoff) {
+    activeIdx = 9;
+    ball.owner = humanPlayers[9];
+    humanPlayers[9].hasBall = true;
+    ball.x = humanPlayers[9].x + PLAYER_R + BALL_R + 1;
+    ball.y = humanPlayers[9].y;
+    setMsg('Kickoff — YOU! Use arrows to move.', 150);
+  } else {
+    ball.owner = cpuPlayers[9];
+    cpuPlayers[9].hasBall = true;
+    ball.x = cpuPlayers[9].x - PLAYER_R - BALL_R - 1;
+    ball.y = cpuPlayers[9].y;
+    setMsg('CPU Kickoff — get back and defend!', 150);
+  }
+}
+
+// ─── INPUT HANDLING ───────────────────────────────────────
+function handleAction(action) {
+  switch (action) {
+    case 'up': case 'down': case 'left': case 'right':
+    case 'up-left': case 'up-right': case 'down-left': case 'down-right':
+    case 'sprint':
+      keys[action] = true; break;
+    case 'shoot':
+      if (!shootCharging) { shootCharging=true; lobShot=false; document.getElementById('kick-indicator').style.display='block'; }
+      break;
+    case 'lob':
+      if (!shootCharging) { shootCharging=true; lobShot=true; document.getElementById('kick-indicator').style.display='block'; }
+      break;
+    case 'pass': doPass(); break;
+    case 'tackle': doTackle(); break;
+    case 'switch': switchToNearest(); break;
+    case 'stop': Object.keys(keys).forEach(k => delete keys[k]); break;
+    case 'restart': restartGame(); break;
+  }
+}
+
+function releaseAction(action) {
+  delete keys[action];
+  if (action === 'shoot' || action === 'lob') {
+    if (shootCharging) {
+      shoot(lobShot);
+      shootCharging = false; shootPower = 0;
+      document.getElementById('kick-indicator').style.display = 'none';
+    }
+  }
+}
+
+document.querySelectorAll('.ctrl-btn').forEach(btn => {
+  const action = btn.dataset.action;
+  btn.addEventListener('pointerdown', e => { e.preventDefault(); btn.classList.add('pressed'); handleAction(action); });
+  btn.addEventListener('pointerup', e => { e.preventDefault(); btn.classList.remove('pressed'); releaseAction(action); });
+  btn.addEventListener('pointerleave', () => { btn.classList.remove('pressed'); releaseAction(action); });
+});
+
+document.addEventListener('keydown', e => {
+  const map = {
+    ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+    ' ':'shoot', 's':'sprint', 'p':'pass', 't':'tackle', 'l':'lob', 'Tab':'switch'
+  };
+  if (map[e.key]) { e.preventDefault(); handleAction(map[e.key]); }
+});
+document.addEventListener('keyup', e => {
+  const map = {
+    ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+    ' ':'shoot', 's':'sprint'
+  };
+  if (map[e.key]) { e.preventDefault(); releaseAction(map[e.key]); }
+});
+
+// ─── TIMER ────────────────────────────────────────────────
+function startTimer() {
+  clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    if (gameOver) return;
+    gameTime--;
+    const m = Math.floor(gameTime/60), s = gameTime%60;
+    document.getElementById('timer-display').textContent = m + ':' + String(s).padStart(2,'0');
+    if (gameTime <= 0) {
+      gameOver = true;
+      clearInterval(timerInterval);
+      const res = score[0]>score[1] ? 'YOU WIN! 🏆' : score[0]<score[1] ? 'CPU Wins 😔' : "Draw! 🤝";
+      showGoalFlash('Full Time!', '#333', res);
+      setMsg('Full Time! ' + res + '  Press ↺ to play again.', 9999);
+    }
+  }, 1000);
+}
+
+function restartGame() {
+  score=[0,0]; gameTime=90*60; gameOver=false;
+  updateScore();
+  document.getElementById('timer-display').textContent='90:00';
+  document.getElementById('goal-flash').style.display='none';
+  resetPositions(true);
+  startTimer();
+}
+
+// ─── MAIN LOOP ────────────────────────────────────────────
+function loop() {
+  ctx.clearRect(0, 0, W, H);
+  drawPitch();
+
+  if (!gameOver) {
+    moveHumanActivePlayer();
+    moveHumanTeammates();
+    aiMoveCpu();
+    moveBall();
+    if (shootCharging) shootPower = Math.min(shootPower + 2.2, 100);
+    if (lastSwitchAnim > 0) lastSwitchAnim--;
+  }
+
+  // Draw human team (non-active dimmed slightly)
+  for (let i = 0; i < humanPlayers.length; i++) {
+    ctx.globalAlpha = i === activeIdx ? 1.0 : 0.85;
+    drawPlayerSprite(humanPlayers[i], i === activeIdx);
+  }
+  ctx.globalAlpha = 1;
+
+  // Draw CPU team
+  for (const p of cpuPlayers) {
+    drawPlayerSprite(p, false);
+  }
+
+  // Draw ball (always on top of players)
+  drawBall();
+  drawShootBar();
+  drawSwitchArrow();
+
+  // Status bar
+  const ap = humanPlayers[activeIdx];
+  const roles = {gk:'GK',def:'DEF',mid:'MID',fwd:'FWD'};
+  document.getElementById('active-player-info').textContent =
+    `▶ #${ap.shirt} (${roles[ap.role]}) ${ap.hasBall ? '⚽' : ''}`;
+
+  if (messageTimer > 0) { messageTimer--; document.getElementById('message').textContent = message; }
+  else { document.getElementById('message').textContent = 'Arrows=Move  Space=Shoot  P=Pass  T=Tackle  Tab=Switch'; }
+
+  requestAnimationFrame(loop);
+}
+
+// ─── START ────────────────────────────────────────────────
+startTimer();
+loop();
+</script>
+</body>
+</html>
